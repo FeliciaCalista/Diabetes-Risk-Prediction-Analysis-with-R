@@ -1,0 +1,647 @@
+---
+title: "Healthcare Data Analysis – Diabetes Dataset with R"
+author: "Felicia Calista"
+date: "2026-01-23"
+output: html_document
+---
+
+
+## Setting Up the Environment
+
+```{r}
+library(tidyverse)
+library(skimr)
+library(rstatix)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(pROC)
+```
+
+## Data understanding
+
+### Load Data
+
+```{r}
+data <- read_csv("diabetes.csv")
+head(data)
+```
+
+### Data Structure
+
+```{r}
+str(data)
+```
+
+### Data Dimension
+
+```{r}
+dim(data)
+```
+
+### Statistic Summary
+
+```{r}
+skim(data)
+```
+
+### Insights:
+
+-   The dataset consists of 768 patients with 8 predictor variables and 1 target.
+
+-   The target indicates diabetes status (0 = non-diabetic, 1 = diabetic)
+
+-   All features are numeric
+
+## Data Quality Check
+
+### Missing Data
+
+```{r}
+colSums(is.na(data))
+```
+
+### Count Strange Data
+
+```{r}
+data %>%
+  summarise(
+    Glucose_0 = sum(Glucose == 0),
+    BloodPressure_0 = sum(BloodPressure == 0),
+    SkinThickness_0 = sum(SkinThickness == 0),
+    Insulin_0 = sum(Insulin == 0),
+    BMI_0 = sum(BMI == 0)
+  )
+```
+
+### Target Variable Understanding
+
+```{r}
+data %>%
+  count(Outcome)
+```
+
+```{r}
+data %>%
+  mutate(Outcome=factor(Outcome, labels=c("Non-Diabetic", "Diabetic"))) %>%
+  ggplot(aes(x=Outcome, fill=Outcome)) +
+  geom_bar() +
+  labs(title="Distribution of Diabetes Outcome", y="Count",
+       fill="Diabetes Status")
+```
+
+### Insights:
+
+-   No missing values
+
+-   There are anomalous data points that will be considered for removal after EDA
+
+-   The distribution of diabetes outcomes is skewed. The number of non-diabetics is almost twice the number of diabetics.
+
+## Exploratory Data Analysis
+
+### Data Distribution
+
+```{r}
+data_long <- data %>%
+  pivot_longer(
+    cols=c(Glucose, BloodPressure, SkinThickness, Insulin, BMI),
+    names_to="Variable",
+    values_to="Value"
+  )
+
+ggplot(data_long, aes(x=Value, fill=factor(Outcome, labels=c("Non-Diabetic", "Diabetic")))) +
+  geom_histogram(
+    bins=30,
+    alpha=0.6,
+    position="identity",
+    color="black"
+  ) +
+  facet_wrap(~ Variable, scales="free", nrow=1) +
+  labs(
+    title="Distribution of Clinical Features by Diabetes Status",
+    fill="Diabetes Status"
+  ) +
+  theme_minimal()
+```
+
+#### Insights:
+
+- Several clinical variables showed spikes at medically invalid zero values, indicating missing values coded as zero.
+
+- Most features had near-normal distributions after excluding zero values, except for Insulin, which showed a right-skewed distribution.
+
+### Glucose VS Outcome
+
+```{r}
+ggplot(data, aes(x=factor(Outcome), y=Glucose, fill=factor(Outcome, labels=c("Non-Diabetic", "Diabetic")))) +
+  geom_boxplot() +
+  labs(title="Glucose Level by Diabetes Outcome",
+       x="Outcome", y="Glucose", fill="Diabetes Status")
+```
+
+#### Insights:
+
+- Median glucose levels in diabetic patients were significantly higher than in non-diabetic patients.
+
+- Although there is overlap between the two classes, the distribution of Glucose in diabetic patients tends to shift towards higher values.
+
+- This indicates that Glucose is a very informative feature for differentiating diabetes status. 
+
+### BMI VS Outcome
+
+```{r}
+ggplot(data, aes(x=factor(Outcome), y=BMI, fill=factor(Outcome, labels=c("Non-Diabetic", "Diabetic")))) +
+  geom_boxplot() +
+  labs(title="BMI by Diabetes Outcome",
+       x="Outcome", y="BMI", fill="Diabetes Status")
+```
+
+#### Insights:
+
+- The BMI boxplot shows a large overlap between diabetic and non-diabetic patients, with a relatively small median difference.
+
+- There are many outliers in both classes, indicating high BMI variation in the population.
+
+- This suggests that BMI alone is less powerful in differentiating diabetes status, but still has the potential to contribute in multivariate models.
+
+### Pearson Correlation between Numeric Variable
+
+```{r}
+cor_matrix <- data %>%
+  select(-Outcome) %>%
+  cor(use = "complete.obs")
+
+cor_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("Feature1") %>%
+  pivot_longer(
+    -Feature1,
+    names_to = "Feature2",
+    values_to = "Correlation"
+  ) %>%
+  ggplot(aes(Feature1, Feature2, fill = Correlation)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", midpoint = 0
+  ) +
+  labs(
+    title = "Correlation Heatmap of Numerical Features",
+    x = "", y = ""
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+cor_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("Feature1") %>%
+  pivot_longer(-Feature1, names_to="Feature2", values_to="Correlation") %>%
+  filter(Feature1 != Feature2) %>%
+  arrange(desc(abs(Correlation)))
+```
+
+#### Insights:
+
+- Moderate correlations were observed between Age and Pregnancies, as well as among anthropometric and metabolic variables such as BMI, SkinThickness, and Insulin. 
+
+- No correlations exceeded commonly used thresholds (>0.7), indicating that multicollinearity is unlikely to significantly impact regression model stability. 
+
+- Therefore, all variables can be retained for linear or logistic regression without severe risk of unstable coefficients. 
+
+## Data Cleaning
+
+### Convert Strange Data into Missing Data
+
+```{r}
+data_clean <- data %>%
+  mutate(
+    Glucose = na_if(Glucose, 0),
+    BloodPressure = na_if(BloodPressure, 0),
+    SkinThickness = na_if(SkinThickness, 0),
+    Insulin = na_if(Insulin, 0),
+    BMI = na_if(BMI, 0)
+  )
+```
+
+#### Explanation:
+
+A substantial number of zero values were observed in physiological variables such as Insulin, BMI, and SkinThickness, which are not clinically plausible. These values were therefore treated as missing rather than true zeros. 
+
+```{r}
+colSums(is.na(data_clean))
+```
+
+### Missing Indicator for Insulin
+
+```{r}
+data_clean <- data_clean %>%
+  mutate(
+    Insulin_missing = ifelse(is.na(Insulin), 1, 0)
+  )
+```
+
+#### Explanation:
+
+Missingness in the Insulin variable was found to be non-random and substantial. A missing indicator was introduced to preserve potential information contained in the missingness pattern. 
+
+### Impute the Missing Data with Data Median
+
+```{r}
+data_clean <- data_clean %>%
+  mutate(across(
+    c(Glucose, BloodPressure, SkinThickness, Insulin, BMI),
+    ~ ifelse(is.na(.), median(., na.rm=TRUE), .)
+  ))
+  
+```
+
+#### Explanation: 
+
+Median imputation was chosen due to its robustness to skewed distributions and outliers, ensuring that extreme values do not disproportionately influence imputed values.
+
+### Log Transform Insulin
+
+```{r}
+data_clean <- data_clean %>%
+  mutate(
+    Insulin_log = log(Insulin + 1)
+  )
+```
+
+#### Explanation:
+
+The Insulin variable exhibited strong skewness. Log transformation was applied to reduce distributional asymmetry and stabilize variance, improving suitability for regression-based analysis.
+
+### Check Distribution
+
+```{r}
+features <- c("Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI")
+
+par(mfrow=c(5, 2),
+    mar=c(3, 3, 2, 1),
+    oma=c(0, 0, 2, 0)
+    )
+
+for (feat in features) {
+  hist(
+    data[[feat]],
+    main=paste("Original", feat),
+    col="lightgray",
+    xlab=feat,
+    border="white"
+  )
+  
+  hist(
+    data_clean[[feat]],
+    main=paste("Cleaned", feat),
+    col="lightgreen",
+    xlab=feat,
+    border="white"
+  )
+}
+
+mtext("Feature Distributions Before and After Data Cleaning",
+      outer=TRUE, cex=1.2)
+
+par(mfrow=c(1,1))
+```
+
+#### Insights: 
+
+Post-cleaning distributions exhibit improved symmetry and reduced distortion caused by invalid zero values, indicating successful normalization of the feature space.
+
+### Outlier Detection
+
+```{r}
+boxplot(data_clean$Glucose, main="Glucose Boxplot")
+```
+
+```{r}
+boxplot(data_clean$BMI, main="BMI Boxplot")
+```
+
+#### Explanation:
+
+Outliers in both Glucose and BMI were identified but retained, as they fall within plausible physiological ranges and may represent genuine variability rather than data errors.
+
+### Dataset Summary
+
+```{r}
+data_main <- data_clean %>%
+  select(-ends_with("_missing"), -ends_with("_log"))
+
+summary_table <- data_main %>%
+  summarise(across(
+    where(is.numeric),
+    list(
+      Min = ~min(.x, na.rm=TRUE),
+      Q1 = ~quantile(.x, 0.25, na.rm=TRUE),
+      Median = ~median(.x, na.rm=TRUE),
+      Mean = ~mean(.x, na.rm=TRUE),
+      Q3 = ~quantile(.x, 0.75, na.rm=TRUE),
+      Max = ~max(.x, na.rm=TRUE)
+    )
+  )) %>%
+  pivot_longer(
+    everything(),
+    names_to=c("Feature", "Statistic"),
+    names_sep="_"
+  ) %>%
+  pivot_wider(
+    names_from=Statistic,
+    values_from=value
+  )
+
+knitr::kable(
+  summary_table,
+  caption = "Summary Statistics After Data Cleaning",
+  digits = 2
+)
+```
+
+#### Insights:
+
+After data cleaning, the dataset contains no implausible values and all features exhibit ranges consistent with expected physiological limits.
+
+## Statistical Analysis
+
+```{r}
+data_clean <- data_clean %>%
+  mutate(Outcome=factor(Outcome, labels=c("Non-Diabetic", "Diabetic")))
+```
+
+### Check Normality with Shapiro-Wilk Test
+
+#### Glucose
+
+```{r}
+data_clean %>%
+  group_by(Outcome) %>%
+  shapiro_test(Glucose)
+```
+
+#### BMI
+
+```{r}
+data_clean %>%
+  group_by(Outcome) %>%
+  shapiro_test(BMI)
+```
+
+#### Insights:
+
+Results indicate significant deviations from normality for both Glucose and BMI across diabetic and non-diabetic individuals (p < 0.05).
+
+### Check Differences in Values Between Classes 
+
+#### Independent t-test 
+
+##### Glucose VS Outcome
+
+```{r}
+t_test_glucose <- t_test(
+  data_clean,
+  Glucose ~ Outcome,
+  var.equal = FALSE
+)
+t_test_glucose
+```
+
+##### BMI VS Outcome
+
+```{r}
+t_test_bmi = t_test(
+  data_clean,
+  BMI ~ Outcome,
+  var.equal = FALSE
+)
+t_test_bmi
+```
+
+#### Mann-Whitney Test 
+
+##### Glucose VS Outcome
+
+```{r}
+wilcox_test(data_clean, Glucose ~ Outcome)
+```
+
+##### BMI VS Outcome
+
+```{r}
+wilcox_test(data_clean, BMI ~ Outcome)
+```
+
+#### Insights:
+
+- Both Welch's t-test and the Mann-Whitney U test indicate a highly significant difference in glucose levels between diabetic and non-diabetic individuals (p < 0.001). Diabetic individuals exhibit substantially higher glucose levels, suggesting strong group separation.
+
+- BMI also differs significantly between outcome groups across both tests (p < 0.001).However, the magnitude of the difference is smaller compared to glucose, indicating greater overlap between diabetic and non-diabetic individuals.
+
+### Chi-Square Test 
+
+#### Age VS Outcome
+
+```{r}
+data_clean <- data_clean %>%
+  mutate(
+    age_group = case_when(
+      Age < 30 ~ "<30",
+      Age < 50 ~ "31-49",
+      TRUE ~ "50+"
+    )
+  )
+
+age_table <- table(data_clean$age_group, data_clean$Outcome)
+age_table
+```
+
+```{r}
+chisq.test(age_table)
+```
+
+```{r}
+ggplot(data_clean, aes(x=age_group, fill=Outcome)) +
+  geom_bar(position="fill") +
+  labs(
+    title="Proportion of Diabetes by Age Group",
+    y="Propotion",
+    x="Age Group"
+  )
+```
+
+#### Insights:
+
+- The chi-square test indicates a significant association between age group and diabetes outcome (p < 0.001). 
+
+- The proportion of diabetic individuals increases markedly in older age groups, with nearly half of individuals aged 31 and above classified as diabetic, compared to about one-fifth among those under 30. 
+
+## Regression & Prediction
+
+### Linear Regression (Glucose & BMI)
+
+```{r}
+model_linear <- lm(Glucose ~ BMI, data=data_clean)
+summary(model_linear)
+
+ggplot(data_clean, aes(x=BMI, y=Glucose)) +
+  geom_point(alpha=0.6) +
+  geom_smooth(method="lm", se=TRUE, color="red") +
+  labs(
+    title="Linear Relationship between BMI and Glucose",
+    x="BMI",
+    y="Glucose"
+  ) +
+  theme_minimal()
+
+par(mfrow=c(2,2))
+plot(model_linear)
+```
+
+#### Insights:
+
+- BMI is positively associated with glucose levels, with each one-unit increase in BMI corresponding to an average increase of approximately 1 mg/dL in glucose.
+
+- p-value < 0.001 indicates there is a real relationship between BMI and Glucose.
+
+- R² = 0.053 indicates although statistically significant, BMI explained only 5.3% of the variability in glucose, indicating that glucose levels are influenced by multiple other factors.
+
+- RSE = 29.63 indicates the average glucose prediction can be off by ±30 mg/dL and BMI alone has limited predictive power. 
+
+### Logistic Regression (Glucose & Outcome)
+
+```{r}
+model_logistic <- glm(
+  Outcome ~ Glucose,
+  data = data_clean,
+  family = binomial
+)
+summary(model_logistic)
+
+ggplot(data_clean, aes(x=Glucose, y=as.numeric(Outcome)-1)) +
+  geom_jitter(height=0.05, alpha=0.5) +
+  stat_smooth(method="glm", method.args=list(family="binomial")) +
+  labs(
+    y="Probability of Diabetes",
+    x="Glucose"
+  ) +
+  theme_minimal()
+
+par(mfrow=c(2,2))
+plot(model_logistic)
+```
+
+```{r}
+exp(coef(model_logistic))
+```
+
+```{r}
+roc_obj <- roc(data_clean$Outcome, fitted(model_logistic))
+auc(roc_obj)
+```
+
+#### Insights:
+
+- Each 1 mg/dL increase in glucose increases the odds of diabetes by ~4.1%. 
+
+- AUC = 0.7915 indicates that the model is acceptable at distinguishing Diabetes VS Non-Diabetes.
+
+### Logistic Regression Multivariat
+
+```{r}
+model_multi <- glm(
+  Outcome ~ Glucose + BMI + Age,
+  data = data_clean,
+  family = binomial
+)
+summary(model_multi)
+```
+
+```{r}
+exp(cbind(
+  OR = coef(model_multi),
+  confint(model_multi)
+))
+```
+
+```{r}
+AIC(model_logistic, model_multi)
+```
+
+```{r}
+roc_obj <- roc(data_clean$Outcome, fitted(model_multi))
+auc(roc_obj)
+```
+
+```{r}
+grid <- bind_rows(
+  data.frame(
+    variable="Glucose",
+    x=seq(min(data_clean$Glucose), max(data_clean$Glucose), length.out=100),
+    Glucose=seq(min(data_clean$Glucose), max(data_clean$Glucose), length.out=100),
+    BMI=median(data_clean$BMI, na.rm=TRUE),
+    Age=median(data_clean$Age, na.rm=TRUE)
+  ),
+  data.frame(
+    variable="BMI",
+    x=seq(min(data_clean$BMI), max(data_clean$BMI), length.out=100),
+    Glucose=median(data_clean$Glucose, na.rm=TRUE),
+    BMI=seq(min(data_clean$BMI), max(data_clean$BMI), length.out=100),
+    Age=median(data_clean$Age, na.rm=TRUE)
+  ),
+  data.frame(
+    variable="Age",
+    x=seq(min(data_clean$Age), max(data_clean$Age), length.out=100),
+    Glucose=median(data_clean$Glucose, na.rm=TRUE),
+    BMI=median(data_clean$BMI, na.rm=TRUE),
+    Age=seq(min(data_clean$Age), max(data_clean$Age), length.out=100)
+  )
+)
+
+grid$pred_prob <- predict(model_multi, newdata=grid, type="response")
+
+ggplot(grid, aes(x=x, y=pred_prob)) + 
+  geom_line(color="steelblue", size=1.2) +
+  facet_wrap(~variable, scales="free_x") +
+  labs(
+    title="Adjusted Effects on Diabetes Risk",
+    x="Value",
+    y="Predicted Probability"
+  ) +
+  theme_minimal()
+```
+
+#### Insights:
+
+- Glucose OR: 1.036 indicates by holding BMI and Age constant, each 1 mg/dL increase in glucose increases the odds of diabetes by ~3.6%.
+
+- BMI OR: 1.096 indicates by holding Glucose and Age constant, each 1-unit increase in BMI increases diabetes odds by ~9.6%. 
+
+- Age OR: 1.030 indicates each additional year of age increases diabetes odds by ~3%, independent of glucose and BMI. 
+
+- The lower AIC value in the Multivariate Model indicates that the addition of BMI and Age substantially improves the model, but the small difference in AIC indicates that Glucose is the strongest predictor of diabetes risk, while BMI and Age make independent additional contributions.
+
+- AUC = 0.8292 indicates that the Multivariate Model is good at distinguishing Diabetes VS Non-Diabetes, better than Logistic Model. 
+
+### Prediction
+
+```{r}
+data_clean <- data_clean %>%
+  mutate(pred_prob = predict(model_logistic, type="response"))
+
+ggplot(data_clean, aes(x=Glucose, y=pred_prob)) +
+  geom_point(alpha=0.4) +
+  geom_smooth(method="loess", se=FALSE) +
+  labs(
+    title="Predicted Probability of Diabetes by Glucose level",
+    x="Glucose",
+    y="Predicted Probability"
+  )
+```
+
+#### Insights:
+
+The predicted probability plot shows a monotonic increase in diabetes risk with increasing glucose levels, demonstrating that the logistic regression model produces clinically interpretable and well-calibrated predictions. However, variability in predicted risk at similar glucose levels suggests the need for additional predictors to improve individual-level prediction accuracy.
